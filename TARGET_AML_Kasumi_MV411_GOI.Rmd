@@ -1,0 +1,257 @@
+---
+title: "Filter Cell Lines"
+author: "Jenny Smith"
+date: "November 22, 2017"
+output: html_document
+---
+
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center', message = FALSE, fig.width = 10, fig.height = 10)
+knitr::opts_knit$set(root.dir = '~/RNA_seq_Analysis/2017.11.07_MSLN_Correlation/')
+```
+
+
+
+```{r}
+library(stringr)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ggplot2)
+```
+
+```{r}
+source("~/scripts/RNAseq_Analysis/DifferentialExpn_PathwayAnalysis/rmDupGenes_Function.r")
+```
+
+
+#Define Functions to be uses
+
+
+#Read in the TPMs
+
+```{r}
+cell.lines <- read.csv("~/RNA_seq_Analysis/2017.10.09_Concatenate_1031_RNAseq/geneLevel/Kasumi_MV4-11_RNASeq_TPM.csv", stringsAsFactors = FALSE)
+
+cell.lines <- cell.lines[,-2]
+
+head(cell.lines)
+```
+
+
+```{r}
+noDups <- rmDupGenes(expnData = cell.lines, geneCol = "geneSymbol")
+```
+
+
+```{r}
+TPM.noDup <- noDups$remDups
+# dim(TPM.noDup) #51573 by 6
+
+colNames <- gsub("^(.+)(\\.D1{1}\\..+)","\\1.noTrt\\2",colnames(TPM.noDup))%>%
+ gsub("\\.11", "11", .)
+
+
+colnames(TPM.noDup) <- colNames
+
+head(TPM.noDup)
+```
+
+
+```{r}
+# write.csv(TPM.noDup,"Kasumi_MV411_rmDupGenes_TPM.csv")
+```
+
+
+```{r}
+CDs <- read.table("Cell surface markers tested by flow in Azacitadine Expt.txt", stringsAsFactors = FALSE,
+                  sep="\t")
+
+CDs <- as.character(CDs$V1)
+```
+
+
+```{r}
+geneInfo <- read.delim("~/RNA_seq_Analysis/0000.00.02_Reference_GeneInfo/Homo_sapiens.gene_info", sep="\t", stringsAsFactors = FALSE, fill=TRUE)
+
+head(geneInfo)
+```
+
+
+```{r}
+alias <- geneInfo %>% 
+  select(Symbol, Synonyms) %>% 
+  mutate(alias=gsub("\\|", " ", paste(Symbol, Synonyms, sep="|"))) %>%
+  mutate(alias=gsub(" -", "", alias))
+
+head(alias)
+```
+
+
+
+```{r}
+regex <- paste0("\\b", CDs, " ") #\b in regex is for beginning of line or the beginning of a column/space
+
+flowAlias <- lapply(regex, function(x) grep( x, alias$alias, value=TRUE, ignore.case = TRUE)) %>%
+  set_names(CDs)
+
+flowAlias <- lapply(flowAlias, function(x) str_split(paste(unlist(x), collapse = " "), " ")[[1]])
+
+
+
+flowAlias <- lapply(names(flowAlias), function(x) ifelse(flowAlias[[x]] == "", x, flowAlias[[x]])) %>%
+  set_names(CDs)
+
+
+# lapply(names(flowAlias),
+       # function(x) cat(x,file="FlowCytometry_GeneNames_Aliases.txt", sep="\n", append = TRUE))
+
+```
+
+
+
+#Filter for expressed genes
+
+```{r}
+options(scipen = 999)
+TPM.tidy <- TPM.noDup %>%
+  rownames_to_column("Gene") %>%
+  gather(var,value, -Gene) %>%
+  mutate(CellType=str_split_fixed(var, "\\.", n=5)[,1],
+         Treated=str_split_fixed(var, "\\.", n=5)[,2],
+         Day=str_split_fixed(var, "\\.", n=5)[,3])
+
+TPM.tidy
+```
+
+
+```{r}
+FC <- function(denom,num){
+  fc <- ifelse(denom/num < 1, -1/(denom/num), denom/num)
+  return(fc)
+}
+
+
+TPM.filter <- TPM.tidy %>%
+  group_by(CellType) %>%
+  filter(value >= 1) %>%
+  select(-var,-Treated) %>%
+  spread(Day, value) %>%
+  filter(complete.cases(D1,D11,D5)) %>% #15,476 genes expressed at least 1TPM in all 3 days
+  select(Gene, CellType, D1, D5, D11) %>%
+  mutate(FoldChange.D5vsD1=FC(D5,D1),
+         FoldChage.D11vsD5=FC(D11,D5))
+
+
+TPM.filter
+```
+
+```{r}
+# write.csv(TPM.filter, "Kasumi_MV4-11_AZATrt_G.E.1TPM_ExpressionMatrix.csv", row.names = FALSE)
+```
+
+
+```{r}
+TPM.Up <- TPM.filter %>%
+  group_by(CellType) %>%
+  filter(D1 < D5 & D5 < D11)
+
+TPM.Up  
+```
+
+```{r}
+# write.csv(TPM.Up, "Kasumi_MV4-11_AZATrt_G.E.1TPM_UpRegulated.csv", row.names = FALSE)
+```
+
+
+#Examine Changes in the cell surface markers
+
+```{r}
+TPM.CDs <- TPM.tidy %>%
+  filter(Gene %in% unlist(flowAlias)) %>% #11 markers are expressed at a detectable level all 3 days. 
+  select(-var,-Treated) %>%
+  spread(Day, value) %>%
+  mutate(Alias=sapply(Gene, function(x) names(flowAlias[grep(x, flowAlias)]))) %>%
+  mutate(FoldChange.D5vsD1=FC(D5+0.001,D1+0.001),
+         FoldChange.D11vsD5=FC(D11+0.001,D5+0.001)) %>%
+  select(Gene,Alias,D1,D5,D11, everything())
+
+TPM.CDs
+write.csv(TPM.CDs, "Kasumi_MV4-11_AZATrt_FlowMarkers.csv", row.names = FALSE)
+```
+
+
+Increases across the 11 day treatment:
+ANPEP	
+CD33	
+CD38	
+IL3RA
+
+
+#Create a expression files for GSEA
+
+```{r}
+source("~/scripts/conversion_scripts/GSEA_fmt_conversion_Function.r")
+```
+
+
+```{r}
+# getwd()
+TPM <- read.csv("Kasumi_MV411_rmDupGenes_TPM.csv", stringsAsFactors = FALSE, row.names = 1)
+
+head(TPM)
+```
+
+
+```{r}
+makeGSEAfmt <- function(celltype,day,tpm){
+  library(dplyr)
+  library(tibble)
+
+  
+  NoTrt <- colnames(tpm)[grep(paste(celltype,"noTrt", sep=".+"), colnames(tpm))]
+  Day <- colnames(tpm)[grep(paste(celltype,day, sep=".+"), colnames(tpm))]
+  
+  cls.file <- paste(celltype, day, "vs_noTrt.cls", sep="_")
+
+  if(day == "D5"){
+    cls(NoTrt,"D5", cls.file)
+  }else{
+    cls(NoTrt, "D11", cls.file)
+  }
+  
+  tpm.filter <- tpm %>%
+    rownames_to_column("Gene") %>%
+    select(c("Gene", NoTrt,Day)) %>%
+    filter(rowSums(select(.,-Gene)) >= 1) %>%
+    column_to_rownames("Gene")
+  
+  gct.file <- paste(celltype, day, "vs_noTrt.gct", sep="_")
+  # print(gct.file)
+  gct(tpm.filter, NoTrt, Day, gct.file)
+}
+
+```
+
+
+```{r}
+celllines <- c("Kasumi", "MV411")
+days <- rep(c("D5", "D11"),2)
+
+gseasD5 <- sapply(celllines, makeGSEAfmt, day="D5", tpm=TPM)
+gsearsD11 <- sapply(celllines, makeGSEAfmt, day="D11", tpm=TPM)
+```
+
+
+
+
+#Session Information
+
+```{r}
+sessionInfo()
+```
+
+
